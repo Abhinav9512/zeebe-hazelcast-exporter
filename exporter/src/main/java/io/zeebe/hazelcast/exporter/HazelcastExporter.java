@@ -16,6 +16,8 @@ import io.zeebe.exporter.proto.Schema;
 import org.slf4j.Logger;
 
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.function.Function;
 
 public class HazelcastExporter implements Exporter {
@@ -25,7 +27,8 @@ public class HazelcastExporter implements Exporter {
   private Controller controller;
 
   private HazelcastInstance hazelcast;
-  private Ringbuffer<byte[]> ringbuffer;
+
+  private Map<Integer, Ringbuffer<byte[]>> ringbufferMap = new HashMap<>();
 
   private Function<Record, byte[]> recordTransformer;
 
@@ -34,7 +37,7 @@ public class HazelcastExporter implements Exporter {
     logger = context.getLogger();
     config = context.getConfiguration().instantiate(ExporterConfiguration.class);
 
-    logger.debug("Starting exporter with configuration: {}", config);
+    logger.info("Starting exporter with configuration: {}", config);
 
     final var filter = new HazelcastRecordFilter(config);
     context.setFilter(filter);
@@ -52,9 +55,9 @@ public class HazelcastExporter implements Exporter {
 
     } else {
       throw new IllegalArgumentException(
-          String.format(
-              "Expected the parameter 'format' to be one fo 'protobuf' or 'json' but was '%s'",
-              format));
+              String.format(
+                      "Expected the parameter 'format' to be one fo 'protobuf' or 'json' but was '%s'",
+                      format));
     }
   }
 
@@ -63,24 +66,10 @@ public class HazelcastExporter implements Exporter {
     this.controller = controller;
 
     hazelcast =
-        config
-            .getRemoteAddress()
-            .map(this::connectToHazelcast)
-            .orElseGet(this::createHazelcastInstance);
-
-    ringbuffer = hazelcast.getRingbuffer(config.getName());
-    if (ringbuffer == null) {
-      throw new IllegalStateException(
-          String.format("Failed to open ring-buffer with name '%s'", config.getName()));
-    }
-
-    logger.info(
-        "Export records to ring-buffer with name '{}' [head: {}, tail: {}, size: {}, capacity: {}]",
-        ringbuffer.getName(),
-        ringbuffer.headSequence(),
-        ringbuffer.tailSequence(),
-        ringbuffer.size(),
-        ringbuffer.capacity());
+            config
+                    .getRemoteAddress()
+                    .map(this::connectToHazelcast)
+                    .orElseGet(this::createHazelcastInstance);
   }
 
   private HazelcastInstance createHazelcastInstance() {
@@ -105,10 +94,9 @@ public class HazelcastExporter implements Exporter {
     hzConfig.addRingBufferConfig(ringbufferConfig);
 
     logger.info(
-        "Creating new in-memory Hazelcast instance [port: {}, cluster-name: {}]",
-        port,
-        clusterName);
-
+            "Creating new in-memory Hazelcast instance [port: {}, cluster-name: {}]",
+            port,
+            clusterName);
     return Hazelcast.newHazelcastInstance(hzConfig);
   }
 
@@ -123,14 +111,14 @@ public class HazelcastExporter implements Exporter {
     networkConfig.addAddress(remoteAddress);
 
     final var connectionRetryConfig =
-        clientConfig.getConnectionStrategyConfig().getConnectionRetryConfig();
+            clientConfig.getConnectionStrategyConfig().getConnectionRetryConfig();
     final var connectionTimeout = Duration.parse(this.config.getRemoteConnectionTimeout());
     connectionRetryConfig.setClusterConnectTimeoutMillis(connectionTimeout.toMillis());
 
     logger.info(
-        "Connecting to remote Hazelcast instance [address: {}, cluster-name: {}]",
-        remoteAddress,
-        clusterName);
+            "Connecting to remote Hazelcast instance [address: {}, cluster-name: {}]",
+            remoteAddress,
+            clusterName);
 
     return HazelcastClient.newHazelcastClient(clientConfig);
   }
@@ -143,14 +131,28 @@ public class HazelcastExporter implements Exporter {
   @Override
   public void export(Record record) {
 
-    if (ringbuffer != null) {
+    if (ringbufferMap.get(record.getPartitionId()) != null) {
       final byte[] transformedRecord = recordTransformer.apply(record);
 
-      final var sequenceNumber = ringbuffer.add(transformedRecord);
-      logger.trace(
-          "Added a record to the ring-buffer [record-position: {}, ring-buffer sequence-number: {}]",
-          record.getPosition(),
-          sequenceNumber);
+      final var sequenceNumber = ringbufferMap.get(record.getPartitionId()).add(transformedRecord);
+      logger.debug(
+              "Added a record to the ring-buffer : {} [record-position: {}, ring-buffer sequence-number: {}]",
+              ringbufferMap.get(record.getPartitionId()).getName(),
+              record.getPosition(),
+              sequenceNumber);
+    } else {
+      String rbName = config.getName() + "_" + record.getPartitionId();
+      Ringbuffer<byte[]> ringbuffer = hazelcast.getRingbuffer(rbName);
+      logger.info(
+              "The code is Creating a new ring-buffer with name '{}' [head: {}, tail: {}, size: {}, capacity: {}] " +
+                      "for partition id : {}",
+              ringbuffer.getName(),
+              ringbuffer.headSequence(),
+              ringbuffer.tailSequence(),
+              ringbuffer.size(),
+              ringbuffer.capacity(),
+              record.getPartitionId());
+      ringbufferMap.put(record.getPartitionId(), ringbuffer);
     }
 
     controller.updateLastExportedRecordPosition(record.getPosition());

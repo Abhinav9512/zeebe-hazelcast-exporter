@@ -2,6 +2,7 @@ package io.zeebe.hazelcast.connect.java;
 
 import com.google.protobuf.InvalidProtocolBufferException;
 import com.hazelcast.client.HazelcastClientNotActiveException;
+import com.hazelcast.config.RingbufferConfig;
 import com.hazelcast.core.HazelcastInstance;
 import com.hazelcast.ringbuffer.Ringbuffer;
 import com.hazelcast.ringbuffer.StaleSequenceException;
@@ -13,9 +14,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.*;
 import java.util.function.Consumer;
 
 public class ZeebeHazelcast implements AutoCloseable {
@@ -53,26 +52,26 @@ public class ZeebeHazelcast implements AutoCloseable {
   private final Ringbuffer<byte[]> ringbuffer;
   private final Map<Class<?>, List<Consumer<?>>> listeners;
   private final Consumer<Long> postProcessListener;
-
   private long sequence;
-
   private Future<?> future;
   private ExecutorService executorService;
 
   private volatile boolean isClosed = false;
 
   private ZeebeHazelcast(
-      Ringbuffer<byte[]> ringbuffer,
-      long sequence,
-      Map<Class<?>, List<Consumer<?>>> listeners,
-      Consumer<Long> postProcessListener) {
+          Ringbuffer<byte[]> ringbuffer,
+          long sequence,
+          Map<Class<?>, List<Consumer<?>>> listeners,
+          Consumer<Long> postProcessListener) {
     this.ringbuffer = ringbuffer;
     this.sequence = sequence;
     this.listeners = listeners;
     this.postProcessListener = postProcessListener;
   }
 
-  /** Returns a new builder to read from the ringbuffer. */
+  /**
+   * Returns a new builder to read from the ringbuffer.
+   */
   public static Builder newBuilder(HazelcastInstance hazelcastInstance) {
     return new ZeebeHazelcast.Builder(hazelcastInstance);
   }
@@ -86,7 +85,9 @@ public class ZeebeHazelcast implements AutoCloseable {
     return isClosed;
   }
 
-  /** Stop reading from the ringbuffer. */
+  /**
+   * Stop reading from the ringbuffer.
+   */
   @Override
   public void close() throws Exception {
     LOGGER.info("Closing. Stop reading from ringbuffer. Current sequence: '{}'", getSequence());
@@ -101,7 +102,9 @@ public class ZeebeHazelcast implements AutoCloseable {
     }
   }
 
-  /** Returns the current sequence. */
+  /**
+   * Returns the current sequence.
+   */
   public long getSequence() {
     return sequence;
   }
@@ -113,7 +116,7 @@ public class ZeebeHazelcast implements AutoCloseable {
   }
 
   private void readNext() {
-    LOGGER.trace("Read from ring-buffer with sequence '{}'", sequence);
+    LOGGER.debug("Read from ring-buffer with sequence '{}'", sequence);
 
     try {
       final byte[] item = ringbuffer.readOne(sequence);
@@ -138,10 +141,10 @@ public class ZeebeHazelcast implements AutoCloseable {
       // StaleSequenceException contains the last known head.
       final var headSequence = e.getHeadSeq();
       LOGGER.warn(
-          "Fail to read from ring-buffer at sequence '{}'. The sequence is reported as stale. Continue with new head sequence at '{}'",
-          sequence,
-          headSequence,
-          e);
+              "Fail to read from ring-buffer at sequence '{}'. The sequence is reported as stale. Continue with new head sequence at '{}'",
+              sequence,
+              headSequence,
+              e);
 
       sequence = headSequence;
 
@@ -149,10 +152,10 @@ public class ZeebeHazelcast implements AutoCloseable {
       // if sequence is smaller than 0 or larger than tailSequence()+1
       final var headSequence = ringbuffer.headSequence();
       LOGGER.warn(
-          "Fail to read from ring-buffer at sequence '{}'. Continue with head sequence at '{}'",
-          sequence,
-          headSequence,
-          e);
+              "Fail to read from ring-buffer at sequence '{}'. Continue with head sequence at '{}'",
+              sequence,
+              headSequence,
+              e);
 
       sequence = headSequence;
 
@@ -166,13 +169,13 @@ public class ZeebeHazelcast implements AutoCloseable {
       }
 
     } catch (InterruptedException e) {
-      LOGGER.debug("Interrupted while reading from ring-buffer with sequence '{}'", sequence);
+      LOGGER.info("Interrupted while reading from ring-buffer with sequence '{}'", sequence);
       throw new RuntimeException("Interrupted while reading from ring-buffer", e);
 
     } catch (Exception e) {
       if (!isClosed) {
         LOGGER.error(
-            "Fail to read from ring-buffer at sequence '{}'. Will try again.", sequence, e);
+                "Fail to read from ring-buffer at sequence '{}'. Will try again.", sequence, e);
       }
     }
   }
@@ -187,14 +190,14 @@ public class ZeebeHazelcast implements AutoCloseable {
   }
 
   private <T extends com.google.protobuf.Message> boolean handleRecord(
-      Schema.Record genericRecord, Class<T> t) throws InvalidProtocolBufferException {
+          Schema.Record genericRecord, Class<T> t) throws InvalidProtocolBufferException {
 
     if (genericRecord.getRecord().is(t)) {
       final var record = genericRecord.getRecord().unpack(t);
 
       listeners
-          .getOrDefault(t, List.of())
-          .forEach(listener -> ((Consumer<T>) listener).accept(record));
+              .getOrDefault(t, List.of())
+              .forEach(listener -> ((Consumer<T>) listener).accept(record));
 
       return true;
     } else {
@@ -257,7 +260,7 @@ public class ZeebeHazelcast implements AutoCloseable {
     }
 
     private <T extends com.google.protobuf.Message> void addListener(
-        Class<T> recordType, Consumer<T> listener) {
+            Class<T> recordType, Consumer<T> listener) {
       final var recordListeners = listeners.getOrDefault(recordType, new ArrayList<>());
       recordListeners.add(listener);
       listeners.put(recordType, recordListeners);
@@ -269,7 +272,7 @@ public class ZeebeHazelcast implements AutoCloseable {
     }
 
     public Builder addDeploymentDistributionListener(
-        Consumer<Schema.DeploymentDistributionRecord> listener) {
+            Consumer<Schema.DeploymentDistributionRecord> listener) {
       addListener(Schema.DeploymentDistributionRecord.class, listener);
       return this;
     }
@@ -325,25 +328,25 @@ public class ZeebeHazelcast implements AutoCloseable {
     }
 
     public Builder addMessageSubscriptionListener(
-        Consumer<Schema.MessageSubscriptionRecord> listener) {
+            Consumer<Schema.MessageSubscriptionRecord> listener) {
       addListener(Schema.MessageSubscriptionRecord.class, listener);
       return this;
     }
 
     public Builder addMessageStartEventSubscriptionListener(
-        Consumer<Schema.MessageStartEventSubscriptionRecord> listener) {
+            Consumer<Schema.MessageStartEventSubscriptionRecord> listener) {
       addListener(Schema.MessageStartEventSubscriptionRecord.class, listener);
       return this;
     }
 
     public Builder addProcessMessageSubscriptionListener(
-        Consumer<Schema.ProcessMessageSubscriptionRecord> listener) {
+            Consumer<Schema.ProcessMessageSubscriptionRecord> listener) {
       addListener(Schema.ProcessMessageSubscriptionRecord.class, listener);
       return this;
     }
 
     public Builder addProcessInstanceCreationListener(
-        Consumer<Schema.ProcessInstanceCreationRecord> listener) {
+            Consumer<Schema.ProcessInstanceCreationRecord> listener) {
       addListener(Schema.ProcessInstanceCreationRecord.class, listener);
       return this;
     }
@@ -359,13 +362,13 @@ public class ZeebeHazelcast implements AutoCloseable {
     }
 
     public Builder addDecisionRequirementsListener(
-        Consumer<Schema.DecisionRequirementsRecord> listener) {
+            Consumer<Schema.DecisionRequirementsRecord> listener) {
       addListener(Schema.DecisionRequirementsRecord.class, listener);
       return this;
     }
 
     public Builder addDecisionEvaluationListener(
-        Consumer<Schema.DecisionEvaluationRecord> listener) {
+            Consumer<Schema.DecisionEvaluationRecord> listener) {
       addListener(Schema.DecisionEvaluationRecord.class, listener);
       return this;
     }
@@ -376,7 +379,7 @@ public class ZeebeHazelcast implements AutoCloseable {
     }
 
     public Builder addSignalSubscriptionListener(
-        Consumer<Schema.SignalSubscriptionRecord> listener) {
+            Consumer<Schema.SignalSubscriptionRecord> listener) {
       addListener(Schema.SignalSubscriptionRecord.class, listener);
       return this;
     }
@@ -389,9 +392,9 @@ public class ZeebeHazelcast implements AutoCloseable {
       if (readFromSequence > 0) {
         if (readFromSequence > (tailSequence + 1)) {
           LOGGER.info(
-              "The given sequence '{}' is greater than the current tail-sequence '{}' of the ringbuffer. Using the head-sequence instead.",
-              readFromSequence,
-              tailSequence);
+                  "The given sequence '{}' is greater than the current tail-sequence '{}' of the ringbuffer. Using the head-sequence instead.",
+                  readFromSequence,
+                  tailSequence);
           return headSequence;
         } else {
           return readFromSequence;
@@ -414,26 +417,29 @@ public class ZeebeHazelcast implements AutoCloseable {
      */
     public ZeebeHazelcast build() {
 
-      LOGGER.debug("Read from ringbuffer with name '{}'", name);
+      LOGGER.info("Read from ringbuffer with name '{}'", name);
+      RingbufferConfig config = new RingbufferConfig(name);
+      config.setCapacity(10000000);
+      hazelcastInstance.getConfig().addRingBufferConfig(config);
       final Ringbuffer<byte[]> ringbuffer = hazelcastInstance.getRingbuffer(name);
 
       if (ringbuffer == null) {
         throw new IllegalArgumentException(
-            String.format("No ring buffer found with name '%s'", name));
+                String.format("No ring buffer found with name '%s'", name));
       }
 
-      LOGGER.debug(
-          "Ringbuffer status: [head: {}, tail: {}, size: {}, capacity: {}]",
-          ringbuffer.headSequence(),
-          ringbuffer.tailSequence(),
-          ringbuffer.size(),
-          ringbuffer.capacity());
+      LOGGER.info(
+              "Ringbuffer status contains following info about the ringbuffer: [head: {}, tail: {}, size: {}, capacity: {}]",
+              ringbuffer.headSequence(),
+              ringbuffer.tailSequence(),
+              ringbuffer.size(),
+              ringbuffer.capacity());
 
       final long sequence = getSequence(ringbuffer);
       LOGGER.info("Read from ringbuffer '{}' starting from sequence '{}'", name, sequence);
 
       final var zeebeHazelcast =
-          new ZeebeHazelcast(ringbuffer, sequence, listeners, postProcessListener);
+              new ZeebeHazelcast(ringbuffer, sequence, listeners, postProcessListener);
       zeebeHazelcast.start();
 
       return zeebeHazelcast;
